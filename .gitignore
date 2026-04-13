@@ -1,0 +1,33 @@
+#  Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+#  Environnement virtuel
+venv/
+.env/
+.venv/
+
+# 🔐 Variables sensibles
+.env
+.env.*
+
+#  Data files (IMPORTANT)
+data/
+*.sqlite
+*.db
+*.csv
+
+#  Jupyter
+.ipynb_checkpoints/
+
+#  VS Code
+.vscode/
+
+#  Logs
+*.log
+
+#  OS
+.DS_Store
+Thumbs.db
