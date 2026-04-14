@@ -59,6 +59,12 @@ Les features sont calculées à partir des tables nettoyées.
 | `inactive` | True si `last_seen` > 90 jours | `users` | Réduction du score |
 | `sub_taux_echec` | Taux d’échec global de l’abonnement (tous membres) | `payments` | Pénalité si > 40% |
 
+| **Features du propriétaire (owner)** | | | |
+| `owner_global_failure_rate` | Taux d’échec global du propriétaire (tous ses paiements) | `payments` | Pénalité si > 30% |
+| `owner_has_fraud_stripe` | True si le propriétaire a déjà un code Stripe frauduleux | `payments` | Score = 100 immédiat |
+| `owner_disputed` | Nombre de litiges du propriétaire (tous abonnements) | `payments` | +15 points si > 0 |
+| `owner_complaints_received` | Nombre de plaintes reçues par le propriétaire (tous abonnements) | `complaints` | +15 points si ≥ 2 |
+
 ### 2.2 Pondération et calcul du score (0 à 100)
 
 Le score est calculé par la fonction `compute_risk_score(row)`.
@@ -68,14 +74,19 @@ Le score est calculé par la fonction `compute_risk_score(row)`.
 - `banni_fraude` = True
 - `sub_has_fraud` = True (fraude sur l’abonnement)
 - `user_anomaly` = True
+- `owner_has_fraud_stripe` = True
+- `user_anomaly_owner` = True
 
 **Pénalités normales** :
 - Taux d’échec > 50% → +40 points
 - Taux d’échec entre 20% et 50% → +20 points
-- Un seul paiement échoué (pas d’autre tentative) → +15 points
+- Un seul paiement échoué → +15 points
 - `disputed` > 0 → +25 points
 - `plaintes_recues` ≥ 3 → +30 points ; entre 1 et 2 → +15 points
 - `sub_taux_echec` > 40% → +20 points
+- `owner_global_failure_rate` > 30% → +20 points
+- `owner_disputed` > 0 → +15 points
+- `owner_complaints_received` ≥ 2 → +15 points
 
 **Ajustements** :
 - Nouveau subscriber (< 2 tentatives et < 30 jours) → -20 points
@@ -112,5 +123,4 @@ Le script `src/scoring.py` produit un fichier CSV `risk_scores.csv` contenant un
 - `nb_tentatives`, `taux_echec`, `plaintes_recues`, `disputed`, `duree_jours`, `est_actif`
 
 
- un même utilisateur peut avoir des scores très différents selon l’abonnement. C’est l’avantage du scoring par membership.
-
+Un même utilisateur peut avoir des scores très différents selon l’abonnement (car le risque dépend aussi du propriétaire). C’est l’avantage du scoring par membership.

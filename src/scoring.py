@@ -4,7 +4,7 @@ from datetime import timedelta
 
 DATA_FOLDER = "data"
 OUTPUT_FOLDER = "output"
-OUTPUT_FILE = "risk_scores_by_membership.csv"
+OUTPUT_FILE = "risk_scores.csv"
 
 def load_data():
     try:
@@ -20,18 +20,17 @@ def load_data():
 
 def prepare_users(users):
     users = users.rename(columns={"id": "user_id"})
-    # Convertir last_seen en datetime UTC
     users['last_seen'] = pd.to_datetime(users['last_seen'], utc=True, errors='coerce')
-    # Flag anomalies utilisateur (status_missing doit exister, sinon utiliser status.isna())
-    users['user_anomaly'] = ((users['status'] == 99) | (users['status'] == -1) | users['status_missing']).astype(int)
+    # Gestion de status_missing : si la colonne n'existe pas, on utilise status.isna()
+    if 'status_missing' in users.columns:
+        users['user_anomaly'] = ((users['status'] == 99) | (users['status'] == -1) | users['status_missing']).astype(int)
+    else:
+        users['user_anomaly'] = ((users['status'] == 99) | (users['status'] == -1) | users['status'].isna()).astype(int)
     now = pd.Timestamp.now(tz='UTC')
     users['inactive'] = (users['last_seen'] < (now - timedelta(days=90))).astype(int)
     return users
 
 def compute_payment_features_by_membership(payments):
-    """
-    Features de paiement au niveau (user_id, subscription_id)
-    """
     pay = payments.groupby(['user_id', 'subscription_id']).agg(
         nb_tentatives=('id', 'count'),
         nb_failed=('is_failed', 'sum'),
@@ -44,9 +43,6 @@ def compute_payment_features_by_membership(payments):
     return pay
 
 def compute_membership_features(memberships):
-    """
-    Features propres au membership (durée, raison de départ, etc.)
-    """
     mem = memberships.copy()
     mem['joined_at'] = pd.to_datetime(mem['joined_at'], utc=True)
     mem['left_at'] = pd.to_datetime(mem['left_at'], utc=True)
@@ -58,33 +54,44 @@ def compute_membership_features(memberships):
     return mem[['user_id', 'subscription_id', 'duree_jours', 'est_actif', 'banni_fraude', 'impayes']]
 
 def compute_complaint_features_by_membership(complaints):
-    """
-    Plaintes au niveau (user_id, subscription_id) : reçues et déposées
-    """
-    # Plaintes reçues (target)
     recues = complaints.groupby(['target_id', 'subscription_id']).size().reset_index(name='plaintes_recues')
     recues = recues.rename(columns={'target_id': 'user_id'})
-    # Plaintes déposées (reporter)
     deposees = complaints.groupby(['reporter_id', 'subscription_id']).size().reset_index(name='plaintes_deposees')
     deposees = deposees.rename(columns={'reporter_id': 'user_id'})
     return recues, deposees
 
 def compute_subscription_global_features(payments, subscriptions):
-    """
-    Features globales de la subscription (taux d'échec global, etc.)
-    """
     sub_pay = payments.groupby('subscription_id').agg(
         sub_nb_tentatives=('id', 'count'),
         sub_nb_failed=('is_failed', 'sum'),
         sub_has_fraud=('stripe_error_code', lambda x: x.isin(['stolen_card', 'fraudulent']).any())
     ).reset_index()
     sub_pay['sub_taux_echec'] = sub_pay['sub_nb_failed'] / sub_pay['sub_nb_tentatives'].clip(lower=1)
-    # Ajouter le propriétaire
     sub_info = subscriptions[['id', 'owner_id']].rename(columns={'id': 'subscription_id'})
     sub_info = sub_info.merge(sub_pay, on='subscription_id', how='left')
     return sub_info
 
-def merge_all(memberships, pay_features, mem_features, recues, deposees, sub_global, users):
+def compute_owner_features(users, payments, complaints):
+    pay_owner = payments.groupby('user_id').agg(
+        owner_global_failure_rate=('is_failed', 'mean'),
+        owner_has_fraud_stripe=('stripe_error_code', lambda x: x.isin(['stolen_card', 'fraudulent']).any()),
+        owner_disputed=('status', lambda x: (x == 'disputed').sum())
+    ).reset_index()
+    complaints_owner = complaints.groupby('target_id').size().reset_index(name='owner_complaints_received')
+    complaints_owner = complaints_owner.rename(columns={'target_id': 'user_id'})
+    user_anomaly = users[['user_id', 'user_anomaly']]
+    owner_feat = pay_owner.merge(complaints_owner, on='user_id', how='left')
+    owner_feat = owner_feat.merge(user_anomaly, on='user_id', how='left')
+    owner_feat.fillna({
+        'owner_global_failure_rate': 0,
+        'owner_has_fraud_stripe': False,
+        'owner_disputed': 0,
+        'owner_complaints_received': 0,
+        'user_anomaly': False
+    }, inplace=True)
+    return owner_feat
+
+def merge_all(memberships, pay_features, mem_features, recues, deposees, sub_global, users, owner_features):
     df = memberships[['user_id', 'subscription_id']].copy()
     df = df.merge(pay_features, on=['user_id', 'subscription_id'], how='left')
     df = df.merge(mem_features, on=['user_id', 'subscription_id'], how='left')
@@ -92,34 +99,45 @@ def merge_all(memberships, pay_features, mem_features, recues, deposees, sub_glo
     df = df.merge(deposees, on=['user_id', 'subscription_id'], how='left')
     df = df.merge(sub_global, on='subscription_id', how='left')
     df = df.merge(users[['user_id', 'user_anomaly', 'inactive']], on='user_id', how='left')
+    
+    # Fusion avec owner_features
+    df = df.merge(owner_features, left_on='owner_id', right_on='user_id', how='left', suffixes=('', '_owner'))
+    df = df.drop(columns=['user_id_owner'], errors='ignore')
+    
+    # Conversion des identifiants en entiers (remplacer NaN par 0)
+    df['owner_id'] = df['owner_id'].fillna(0).astype(int)
+    # user_id et subscription_id sont déjà int, mais on s'assure qu'ils le restent
+    df['user_id'] = df['user_id'].astype(int)
+    df['subscription_id'] = df['subscription_id'].astype(int)
     return df
 
 def clean_data(df):
     numeric_cols = [
         'nb_tentatives', 'taux_echec', 'devises_diff', 'disputed',
         'duree_jours', 'impayes', 'plaintes_recues', 'plaintes_deposees',
-        'sub_nb_tentatives', 'sub_taux_echec'
+        'sub_nb_tentatives', 'sub_taux_echec',
+        'owner_global_failure_rate', 'owner_disputed', 'owner_complaints_received'
     ]
     for col in numeric_cols:
         if col in df.columns:
             df[col] = df[col].fillna(0)
-    bool_cols = ['stripe_fraud_flag', 'banni_fraude', 'sub_has_fraud', 'user_anomaly', 'est_actif']
+    bool_cols = [
+        'stripe_fraud_flag', 'banni_fraude', 'sub_has_fraud', 'user_anomaly', 'est_actif',
+        'owner_has_fraud_stripe'
+    ]
     for col in bool_cols:
         if col in df.columns:
             df[col] = df[col].fillna(False)
     return df
 
 def compute_risk_score(row):
-    """
-    Score individuel pour un membership (user + subscription)
-    """
-    # 1. Critiques : fraude avérée ou anomalie utilisateur
-    if row.get('stripe_fraud_flag') or row.get('banni_fraude') or row.get('sub_has_fraud') or row.get('user_anomaly'):
+    # Critiques
+    if (row.get('stripe_fraud_flag') or row.get('banni_fraude') or 
+        row.get('sub_has_fraud') or row.get('user_anomaly') or
+        row.get('owner_has_fraud_stripe') or row.get('user_anomaly_owner')):
         return 100
 
     score = 0
-
-    # 2. Taux d'échec du user sur CETTE subscription
     fr = row['taux_echec']
     if row['nb_tentatives'] >= 2:
         if fr > 0.5:
@@ -127,30 +145,30 @@ def compute_risk_score(row):
         elif fr > 0.2:
             score += 20
     elif row['nb_tentatives'] == 1 and fr == 1.0:
-        # Un seul paiement échoué = suspect mais pas critique
         score += 15
 
-    # 3. Litiges sur cette subscription
     if row['disputed'] > 0:
         score += 25
 
-    # 4. Plaintes reçues par l'utilisateur sur cette subscription
     plaintes = row['plaintes_recues']
     if plaintes >= 3:
         score += 30
     elif plaintes >= 1:
         score += 15
 
-    # 5. Comportement de la subscription globale
     if row['sub_taux_echec'] > 0.4:
         score += 20
 
-    # 6. Nouveau subscriber (peu d'historique) : on ne pénalise pas trop
+    if row['owner_global_failure_rate'] > 0.3:
+        score += 20
+    if row['owner_disputed'] > 0:
+        score += 15
+    if row['owner_complaints_received'] >= 2:
+        score += 15
+
     if row['nb_tentatives'] < 2 and row['duree_jours'] < 30:
-        # Réduction du score pour les nouveaux
         score = max(0, score - 20)
 
-    # 7. Inactivité de l'utilisateur (réduction)
     if row['inactive']:
         score = max(0, score - 15)
 
@@ -165,16 +183,24 @@ def save_output(df):
     cols_to_keep = [
         'user_id', 'subscription_id', 'risk_score',
         'nb_tentatives', 'taux_echec', 'plaintes_recues', 'disputed',
-        'duree_jours', 'est_actif'
+        'duree_jours', 'est_actif',
+        'owner_id', 'owner_global_failure_rate', 'owner_complaints_received'
     ]
-    final_df = df[cols_to_keep].copy()
+    existing_cols = [c for c in cols_to_keep if c in df.columns]
+    final_df = df[existing_cols].copy()
+    # Convertir les colonnes d'ID en int
+    for col in ['user_id', 'subscription_id', 'owner_id', 'nb_tentatives',  'plaintes_recues', 'disputed',
+        'duree_jours', 'est_actif',
+        'owner_id', 'owner_global_failure_rate', 'owner_complaints_received']:
+        if col in final_df.columns:
+            final_df[col] = final_df[col].fillna(0).astype(int)
     output_path = os.path.join(OUTPUT_FOLDER, OUTPUT_FILE)
     final_df.to_csv(output_path, index=False)
     print(f"Scoring terminé. Fichier : {output_path}")
     print(f"Nombre de memberships scorés : {len(final_df)}")
 
 def run_pipeline():
-    print("Lancement du pipeline de scoring par membership...")
+    print("Lancement du pipeline de scoring par membership (avec prise en compte du risque owner)...")
     users, payments, memberships, complaints, subscriptions = load_data()
 
     users = prepare_users(users)
@@ -182,8 +208,9 @@ def run_pipeline():
     mem_features = compute_membership_features(memberships)
     recues, deposees = compute_complaint_features_by_membership(complaints)
     sub_global = compute_subscription_global_features(payments, subscriptions)
+    owner_features = compute_owner_features(users, payments, complaints)
 
-    df = merge_all(memberships, pay_features, mem_features, recues, deposees, sub_global, users)
+    df = merge_all(memberships, pay_features, mem_features, recues, deposees, sub_global, users, owner_features)
     df = clean_data(df)
     df = apply_scoring(df)
     save_output(df)
