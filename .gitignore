@@ -9,7 +9,7 @@ venv/
 .env/
 .venv/
 
-# 🔐 Variables sensibles
+#  Variables sensibles
 .env
 .env.*
 
