@@ -275,9 +275,6 @@ elif st.session_state.page == "Statistiques":
     else:
         st.info("Aucune action enregistrée.")
 
-# ============================================================
-# FOOTER
-# ============================================================
 
 st.markdown("---")
 st.caption(f"Risk Monitor v2 | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
