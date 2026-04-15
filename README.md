@@ -92,8 +92,8 @@ Voir : [prompts/](prompts/) — prompts versionnés avec explication des choix
 |-------|------|---------------|
 | **Python** | Langage principal | Écosystème data mature (pandas, numpy), standard dans les projets d'analyse |
 | **Pandas** | Manipulation des données | Lecture SQLite, nettoyage, feature engineering, export CSV |
-| **Jupyter Notebook** | Exploration interactive | Permet de documenter la démarche de nettoyage pas à pas — exigé par l'énoncé |
-| **Streamlit** | Interface web | Framework Python natif, pas de front séparé à maintenir, déploiement simple |
+| **Jupyter Notebook** | Exploration interactive | Permet de documenter la démarche de nettoyage pas à pas |
+| **Streamlit** | Interface web | Framework Python natif, pas de front séparé à maintenir, déploiement simple et rapide |
 | **Plotly** | Visualisations | Graphiques interactifs (histogramme, camembert) sans JavaScript |
 | **Ollama** | Serveur LLM local | Fait tourner des LLMs en local sans API key ni coût — privacy des données |
 | **llama3.2:3b** | Modèle IA | Modèle léger (2 GB), rapide sur CPU, suffisant pour l'analyse structurée en JSON |
@@ -182,36 +182,3 @@ streamlit run app/app.py
 
 ---
 
-## Hypothèses sur les données
-
-Aucun dictionnaire de données n'était fourni. Les hypothèses suivantes ont été déduites par exploration :
-
-| Hypothèse | Justification |
-|-----------|---------------|
-| `status` = 99 ou -1 dans `users` → compte anormal | Valeurs isolées hors codes normaux, associées à des comportements suspects |
-| `success` et `succeeded` → même statut | Doublons sémantiques identifiés par comparaison des montants et dates |
-| `left_at` vide → membership actif | Cohérent avec les lignes où le statut est "actif" |
-| Timestamps UTC hétérogènes → normalisés en UTC | Plusieurs fuseaux détectés dans les colonnes de dates |
-| `reporter_id` = `target_id` → auto-plainte invalide | Supprimé (aberration métier impossible en production) |
-
----
-
-## Limites connues
-
-| Limite | Impact |
-|--------|--------|
-| Scoring basé sur des règles expertes | Les pondérations sont arbitraires, pas calibrées sur des données labellisées |
-| Qualité de la réponse IA variable | llama3.2:3b peut produire des JSON malformés — le fallback rule-based compense |
-| Pas de temporalité dans le scoring | Un taux d'échec récent n'est pas distingué d'un taux d'échec ancien |
-| Actions opérateur non horodatées | L'historique des changements n'est pas tracé, seulement l'état final |
-| Données statiques | Pas de mise à jour en temps réel — relancer `scoring.py` pour actualiser |
-
----
-
-## Pistes d'évolution
-
-- **Modèle supervisé** : avec des labels fraude/non-fraude, remplacer les règles par un XGBoost entraîné sur l'historique
-- **Détection de patterns collectifs** : identifier des groupes de subscribers qui rejoignent le même owner à quelques minutes d'intervalle
-- **Horodatage des actions** : logger chaque décision opérateur avec timestamp
-- **Mise à jour incrémentale** : recalculer uniquement les memberships modifiés
-- **Déploiement** : containeriser avec Docker
