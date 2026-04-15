@@ -7,12 +7,7 @@ seaborn
 jupyter
 
 streamlit
-fastapi
-uvicorn
+plotly
 
-sqlalchemy
-
+requests
 python-dotenv
-
-openai
-tiktoken

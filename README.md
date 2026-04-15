@@ -1,191 +1,188 @@
-#  Risk Monitor
+# Risk Monitor
 
 Système interne de détection et de scoring des utilisateurs à risque dans une marketplace d'abonnements partagés, basé sur l'analyse de données et l'aide à la décision via IA.
 
-##  Objectif du projet
+## Objectif du projet
 
 Ce projet vise à détecter les utilisateurs à risque sur une plateforme d'abonnement (type marketplace ou SaaS), en se basant sur leurs comportements :
 
--  Paiements
--  Abonnements
--  Interactions (plaintes)
+- Paiements
+- Abonnements
+- Interactions (plaintes)
 
 Dans ce projet, un "subscriber" correspond à un "membership", c'est-à-dire une relation entre un utilisateur et un abonnement.
 
-Ainsi, le scoring est réalisé au niveau (user_id, subscription_id) et non au niveau global utilisateur.
-
-##  1. Exploration et Data Cleaning
-
-Avant toute étape de transformation, une phase d'exploration approfondie a été réalisée afin de maîtriser la structure et la qualité des données sources.
-
-**Cette étape avait pour objectifs :**
-* Analyser chaque table individuellement afin de comprendre son rôle métier dans la plateforme.
-* Étudier les colonnes pour identifier leur signification et leur type (numérique, catégoriel, temporel, etc.)
-* Détecter les incohérences telles que :
-    * valeurs manquantes
-    * formats de données hétérogènes
-    * doublons ou anomalies
-* Comprendre les relations entre les tables (ex: users ↔ payments ↔ subscriptions).
-* Identifier les premières hypothèses métier, notamment autour du comportement utilisateur et du risque.
+Ainsi, le scoring est réalisé au niveau `(user_id, subscription_id)` et non au niveau global utilisateur.
 
 ---
 
-### 1.1 Description des tables et identification des problemes
-voir : [docs/tables.md](docs/tables.md) et [notebooks/exploration&clean_data.ipynb](notebooks/exploration&clean_data.ipynb)
+## Étapes du projet
 
-### 1.2 Nettoyage de données
+### Épreuve 1 — Exploration et Data Cleaning
 
-voir : [notebooks/exploration&clean_data.ipynb](notebooks/exploration&clean_data.ipynb)
+Avant toute transformation, une phase d'exploration approfondie a été réalisée pour comprendre et nettoyer les données sources.
 
-## 2. Feature Engineering pour le Risk Scoring
+**Objectifs :**
+- Analyser chaque table et comprendre son rôle métier
+- Détecter les incohérences (valeurs manquantes, formats hétérogènes, doublons)
+- Comprendre les relations entre tables (users ↔ payments ↔ subscriptions)
+- Formuler les hypothèses sur les données non documentées
 
-L'objectif est de construire un **score de risque par subscriber** (chaque ligne = un utilisateur dans un abonnement donné).
-Les features sont calculées à partir des tables nettoyées.
-
-### 2.1 Features par membership (user + subscription)
-
-| Feature (nom dans le code) | Description | Source | Utilisation |
-|---------|-------------|--------|--------------|
-| `payment_count` | Nombre de tentatives de paiement pour cet abonnement | `payments` | Seuil minimal pour évaluer le taux d'échec |
-| `payment_failure_rate` | Ratio échecs / tentatives (0 à 1) | `payments` | Pénalité progressive selon le taux |
-| `has_stripe_fraud_code` | True si code Stripe = `stolen_card` ou `fraudulent` | `payments` | +25 points |
-| `dispute_count` | Nombre de paiements contestés (litiges) | `payments` | +10 points par litige (max +20) |
-| `currency_diversity` | Nombre de devises différentes utilisées | `payments` | +15 points si > 2 devises (card-testing) |
-| `left_for_fraud` | True si le membership s'est terminé pour motif `fraud` | `memberships` | +30 points |
-| `left_for_payment_failed` | True si le membership s'est terminé pour motif `payment_failed` | `memberships` | +15 points |
-| `membership_days` | Âge du membership en jours (depuis `joined_at`) | `memberships` | Utilisé pour la segmentation |
-| `is_active` | True si `left_at` est vide | `memberships` | Utilisé pour la segmentation |
-| `complaints_received` | Plaintes déposées contre l'utilisateur sur cet abonnement | `complaints` | +8 pts si >= 1, +20 pts si >= 2 |
-| `complaints_filed` | Plaintes déposées par l'utilisateur | `complaints` | +12 pts si >= 2 (comportement litigieux) |
-| `is_user_inactive` | True si `last_seen` > 90 jours | `users` | Utilisé dans la segmentation DORMANT |
-| `sub_payment_failure_rate` | Taux d'échec global de l'abonnement (tous membres) | `payments` | +8 pts si >= 30%, +15 pts si >= 50% |
-| `sub_has_fraud_code` | True si un code Stripe frauduleux existe dans l'abonnement | `payments` | +12 points |
-
-| **Features du propriétaire (owner)** | | | |
-|---------|-------------|--------|--------------|
-| `owner_payment_failure_rate` | Taux d'échec global du propriétaire (tous ses paiements) | `payments` | +8 pts si >= 20%, +18 pts si >= 40% |
-| `owner_has_fraud_code` | True si le propriétaire a un code Stripe frauduleux | `payments` | +20 points |
-| `owner_dispute_count` | Nombre de litiges du propriétaire (tous abonnements) | `payments` | +12 points si > 1 |
-| `owner_complaints_received` | Nombre de plaintes reçues par le propriétaire | `complaints` | +8 pts si >= 1, +15 pts si >= 3 |
-| `owner_is_anomaly` | True si le compte propriétaire a un status anormal (99, -1) | `users` | +20 points |
-
-### 2.2 Pondération et calcul du score (0 à 100)
-
-Le score est calculé par la fonction `compute_risk_score(row)` dans [src/scoring.py](src/scoring.py).
-
-**Section 1 — Paiements (domaine critique)**
-
-| Condition | Points |
-|-----------|--------|
-| >= 3 paiements et taux d'échec = 100% | +35 |
-| >= 3 paiements et taux d'échec >= 75% | +28 |
-| >= 3 paiements et taux d'échec >= 50% | +18 |
-| >= 3 paiements et taux d'échec >= 25% | +8 |
-| 2 paiements et taux d'échec >= 50% | +15 |
-| 1 paiement échoué | +8 |
-| `has_stripe_fraud_code` = True | +25 |
-| `dispute_count` > 0 | +10 par litige (max +20) |
-| `currency_diversity` > 2 | +15 |
-
-**Section 2 — Adhésion & comportement**
-
-| Condition | Points |
-|-----------|--------|
-| `left_for_fraud` = True | +30 |
-| `left_for_payment_failed` = True | +15 |
-| Segment DORMANT | -10 |
-
-**Section 3 — Plaintes**
-
-| Condition | Points |
-|-----------|--------|
-| `complaints_received` >= 2 | +20 |
-| `complaints_received` = 1 | +8 |
-| `complaints_filed` >= 2 | +12 |
-
-**Section 4 — Contexte abonnement**
-
-| Condition | Points |
-|-----------|--------|
-| `sub_payment_failure_rate` >= 50% | +15 |
-| `sub_payment_failure_rate` >= 30% | +8 |
-| `sub_has_fraud_code` = True | +12 |
-
-**Section 5 — Contexte propriétaire**
-
-| Condition | Points |
-|-----------|--------|
-| `owner_payment_failure_rate` >= 40% | +18 |
-| `owner_payment_failure_rate` >= 20% | +8 |
-| `owner_has_fraud_code` = True | +20 |
-| `owner_dispute_count` > 1 | +12 |
-| `owner_complaints_received` >= 3 | +15 |
-| `owner_complaints_received` >= 1 | +8 |
-| `owner_is_anomaly` = True | +20 |
-
-**Section 6 — Ajustements par segment**
-
-| Segment | Condition | Ajustement |
-|---------|-----------|------------|
-| NOUVEAU | Pas de fraude Stripe ni de `left_for_fraud` | -15 (bénéfice du doute) |
-| ANCIEN | Pas de `left_for_fraud` | -20 (a quitté normalement) |
-
-**Borne finale** : `min(100, max(0, score))`
-
-### 2.3 Segmentation des memberships
-
-Avant le scoring, chaque membership est classé dans un segment :
-
-| Segment | Critère |
-|---------|---------|
-| NOUVEAU | `membership_days` < 30 jours |
-| ACTIF | >= 30 jours et `is_active` = True |
-| ANCIEN | `is_active` = False |
-
-### 2.4 Edge cases gérés
-
-| Cas | Traitement |
-|-----|-------------|
-| Aucun paiement | `payment_count` = 0 → `payment_failure_rate` = 0, aucune pénalité |
-| Un seul paiement réussi | Score bas (0 sauf s'il y a d'autres signaux) |
-| Nouveau subscriber (< 30 jours) | Score réduit de 15 points si pas de fraude confirmée |
-| Membre inactif | Classé DORMANT → score réduit de 10 points |
-| Données manquantes | `fillna(0)` pour les numériques, `fillna(False)` pour les booléens |
-
-### 2.5 Interprétation du score
-
-| Score | Niveau | Action recommandée |
-|-------|--------|--------------------|
-| 0 – 39 | Faible | Surveillance normale |
-| 40 – 59 | Modéré | Mettre en surveillance |
-| 60 – 79 | Élevé | Contacter l'utilisateur / owner |
-| 80 – 100 | Critique | Bloquer immédiatement |
+Voir : [docs/tables.md](docs/tables.md) — description des tables + anomalies détectées  
+Voir : [notebooks/exploration&clean_data.ipynb](notebooks/exploration&clean_data.ipynb) — démarche complète
 
 ---
 
-### 2.6 Résultats du scoring
+### Épreuve 2 — Scoring de risque
 
-Le script `src/scoring.py` produit un fichier CSV `output/risk_scores.csv` contenant une ligne par membership avec les colonnes :
+Un score de risque (0–100) est calculé pour chaque membership à partir de 5 dimensions :
 
-| Colonne | Description |
-|---------|-------------|
-| `user_id` | Identifiant de l'utilisateur |
-| `subscription_id` | Identifiant de l'abonnement |
-| `owner_id` | Identifiant du propriétaire |
-| `segment` | NOUVEAU / ACTIF / ANCIEN |
-| `risk_score` | Score de 0 à 100 |
-| `risk_level` | FAIBLE / MODÉRÉ / ÉLEVÉ / CRITIQUE |
-| `membership_days` | Ancienneté du membership |
-| `is_active` | Membership actif ou non |
-| `payment_count` | Nombre de tentatives de paiement |
-| `payment_failure_rate` | Taux d'échec des paiements |
-| `has_stripe_fraud_code` | Fraude Stripe détectée |
-| `dispute_count` | Nombre de litiges |
-| `complaints_received` | Plaintes reçues |
-| `complaints_filed` | Plaintes déposées |
-| `sub_payment_failure_rate` | Taux d'échec global de l'abonnement |
-| `owner_payment_failure_rate` | Taux d'échec global du propriétaire |
-| `owner_has_fraud_code` | Fraude Stripe détectée chez le propriétaire |
-| `owner_complaints_received` | Plaintes reçues par le propriétaire |
+| Dimension | Exemples de signaux |
+|-----------|-------------------|
+| Paiements | taux d'échec, code fraude Stripe, litiges |
+| Comportement | motif de départ, ancienneté |
+| Plaintes | plaintes reçues, plaintes déposées |
+| Contexte abonnement | taux d'échec global de l'abonnement |
+| Contexte owner | taux d'échec et fraude du propriétaire |
 
-Un même utilisateur peut avoir des scores très différents selon l'abonnement (car le risque dépend aussi du propriétaire et du contexte de la subscription). C'est l'avantage du scoring par membership.
+| Score | Niveau | Action |
+|-------|--------|--------|
+| 0–39 | Faible | Surveillance normale |
+| 40–59 | Modéré | Mettre en surveillance |
+| 60–79 | Élevé | Contacter l'utilisateur |
+| 80–100 | Critique | Bloquer immédiatement |
+
+Voir : [docs/scoring.md](docs/scoring.md) — features, pondérations, edge cases, segmentation
+
+---
+
+### Épreuve 3 — Interface opérationnelle (Streamlit)
+
+Dashboard interactif permettant à un opérateur de :
+- Voir la liste des memberships triés par score de risque
+- Filtrer par niveau, segment, score
+- Consulter le détail d'un subscriber (paiements, plaintes, flags)
+- Appliquer une action : **Bloquer**, **Surveiller**, **Réinitialiser**
+- Les actions **persistent** entre les sessions (sauvegardées dans `output/actions.csv`)
+
+---
+
+### Épreuve 4 — Agent IA (Ollama llama3.2:3b)
+
+L'agent remplit deux rôles par appel :
+
+**Analyste** — génère un résumé structuré du comportement observé, identifie les signaux d'alerte et compare le subscriber aux moyennes de la base.
+
+**Décideur** — propose une action (ignorer / surveiller / avertir / bloquer) avec un niveau de confiance et une justification.
+
+L'opérateur peut **accepter** ou **rejeter** la recommandation. Les rejets sont loggés dans `output/rejected_decisions.csv` pour analyse ultérieure.
+
+**Pourquoi Ollama (modèle local) ?**
+- Aucun coût — pas d'API key, pas de facturation
+- Privacy — les données subscribers ne quittent pas la machine
+- Fallback automatique — si Ollama est indisponible, l'agent bascule sur des règles déterministes qui produisent la même structure de réponse
+
+Voir : [prompts/](prompts/) — prompts versionnés avec explication des choix
+
+---
+
+## Choix techniques
+
+| Choix | Justification |
+|-------|---------------|
+| **Scoring par membership** | Un même user peut être risqué dans un abonnement et normal dans un autre — le contexte owner change tout |
+| **Score additif (pas de règles critiques)** | Évite les faux positifs sur un signal isolé — un subscriber frauduleux cumule plusieurs signaux |
+| **Segmentation NOUVEAU / ACTIF / ANCIEN** | Un membre de 10 jours ne peut pas être jugé comme un membre de 2 ans — ajustements différenciés |
+| **Ollama local** | Gratuit, privacy, pas de dépendance cloud |
+| **Fallback rule-based** | L'interface reste utilisable même si le modèle IA est indisponible |
+| **Persistance CSV** | Simple, lisible, pas de dépendance base de données pour ce volume |
+
+---
+
+## Architecture
+
+```
+Risk-Monitor/
+│
+├── data/
+│   ├── risk_monitor_dataset.sqlite   # Données sources
+│   └── *_clean.csv                   # Générés par le notebook
+│
+├── notebooks/
+│   └── exploration&clean_data.ipynb  # Exploration + nettoyage
+│
+├── src/
+│   ├── scoring.py                    # Pipeline de scoring
+│   └── agent.py                      # Agent IA (Ollama)
+│
+├── app/
+│   └── app.py                        # Interface Streamlit
+│
+├── output/
+│   ├── risk_scores.csv               # Scores (généré par scoring.py)
+│   ├── actions.csv                   # Actions opérateur (persistées)
+│   ├── ai_logs.csv                   # Logs des appels IA
+│   └── rejected_decisions.csv        # Décisions IA rejetées
+│
+├── docs/
+│   ├── tables.md                     # Tables + anomalies détectées
+│   └── scoring.md                    # Système de scoring détaillé
+│
+└── prompts/                          # Prompts IA versionnés
+```
+
+---
+
+## Lancer le projet
+
+```bash
+# 1. Installer les dépendances
+pip install -r requirements.txt
+
+# 2. Générer les scores (après avoir exécuté le notebook de nettoyage)
+python src/scoring.py
+
+# 3. (Optionnel) Télécharger le modèle IA local
+ollama pull llama3.2:3b
+
+# 4. Lancer l'interface
+streamlit run app/app.py
+```
+
+> Le notebook de nettoyage doit être exécuté en premier pour générer les CSV dans `data/`.
+
+---
+
+## Hypothèses sur les données
+
+Aucun dictionnaire de données n'était fourni. Les hypothèses suivantes ont été déduites par exploration :
+
+| Hypothèse | Justification |
+|-----------|---------------|
+| `status` = 99 ou -1 dans `users` → compte anormal | Valeurs isolées hors codes normaux, associées à des comportements suspects |
+| `success` et `succeeded` → même statut | Doublons sémantiques identifiés par comparaison des montants et dates |
+| `left_at` vide → membership actif | Cohérent avec les lignes où le statut est "actif" |
+| Timestamps UTC hétérogènes → normalisés en UTC | Plusieurs fuseaux détectés dans les colonnes de dates |
+| `reporter_id` = `target_id` → auto-plainte invalide | Supprimé (aberration métier impossible en production) |
+
+---
+
+## Limites connues
+
+| Limite | Impact |
+|--------|--------|
+| Scoring basé sur des règles expertes | Les pondérations sont arbitraires, pas calibrées sur des données labellisées |
+| Qualité de la réponse IA variable | llama3.2:3b peut produire des JSON malformés — le fallback rule-based compense |
+| Pas de temporalité dans le scoring | Un taux d'échec récent n'est pas distingué d'un taux d'échec ancien |
+| Actions opérateur non horodatées | L'historique des changements n'est pas tracé, seulement l'état final |
+| Données statiques | Pas de mise à jour en temps réel — relancer `scoring.py` pour actualiser |
+
+---
+
+## Pistes d'évolution
+
+- **Modèle supervisé** : avec des labels fraude/non-fraude, remplacer les règles par un XGBoost entraîné sur l'historique
+- **Détection de patterns collectifs** : identifier des groupes de subscribers qui rejoignent le même owner à quelques minutes d'intervalle
+- **Horodatage des actions** : logger chaque décision opérateur avec timestamp
+- **Mise à jour incrémentale** : recalculer uniquement les memberships modifiés
+- **Déploiement** : containeriser avec Docker, déployer sur Render ou Railway
