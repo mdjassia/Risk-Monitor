@@ -26,11 +26,14 @@ from datetime import datetime
 import requests
 import pandas as pd
 
+
+_OLLAMA_BASE = os.getenv("OLLAMA_URL", "http://localhost:11434")
+OLLAMA_URL   = _OLLAMA_BASE.rstrip("/") + "/api/generate"
 # ──────────────────────────────────────────────────────────────
 # CONFIG
 # ──────────────────────────────────────────────────────────────
 
-OLLAMA_URL   = "http://localhost:11434/api/chat"
+
 MODEL        = "llama3.2:3b"
 TIMEOUT_SEC  = 120
 
@@ -43,20 +46,24 @@ VALID_ACTIONS = {"surveiller", "avertir", "bloquer", "ignorer"}
 # SYSTEM PROMPT
 # ──────────────────────────────────────────────────────────────
 
-_SYSTEM_PROMPT = """Tu es un expert en détection de fraude. Analyse les données d'un subscriber et réponds UNIQUEMENT en JSON valide, sans texte autour.
+_SYSTEM_PROMPT = """Tu es un expert en detection de fraude. Analyse les donnees et reponds en JSON.
 
-Signaux à détecter (utilise uniquement ceux qui sont vrais) :
-- "Taux d'échec paiement élevé (X%)" si echec > 40%
-- "Code fraude Stripe détecté" si Fraude=OUI
-- "Litige(s) enregistré(s)" si Litiges > 0
-- "Plaintes reçues contre lui" si Plaintes_recues > 0
-- "Abonnement à risque élevé" si Sub_echec > 40%
-- "Owner problématique" si Owner_fraude=OUI ou Owner_echec > 40%
+SIGNAUX (seulement si vrais) :
+- Si echec_paiement > 40% : "Taux echec paiement a X%"
+- Si Fraude_Stripe=OUI : "Code fraude Stripe detecte"
+- Si Litiges > 0 : "X litige(s) enregistre(s)"
+- Si Plaintes_recues > 1 : "X plaintes recues"
+- Si Sub_echec > 40% : "Abonnement risque, echec X%"
+- Si Owner_fraude=OUI : "Owner avec historique fraude"
 
-Actions : ignorer (score bas, aucun signal) | surveiller (1-2 signaux faibles) | avertir (signaux sérieux) | bloquer (fraude confirmée)
+DECISION :
+- ignorer : score < 40 et 0 signal
+- surveiller : score 40-60 ou 1 signal faible
+- avertir : score 60-80 ou 2+ signaux
+- bloquer : Fraude_Stripe=OUI ou score > 80
 
-Format de réponse obligatoire :
-{"analyste":{"behavior_summary":"1-2 phrases factuelles","alert_signals":["signal concret"],"vs_population":"comparaison avec moyennes"},"decideur":{"action":"ignorer|surveiller|avertir|bloquer","confidence":0.0,"justification":"1 phrase"}}""".strip()
+FORMAT JSON :
+{"analyste":{"behavior_summary":"1 phrase avec chiffres concrets","alert_signals":["signal avec chiffre"],"vs_population":"echec X% vs moyenne Y%, score Z vs moyenne W"},"decideur":{"action":"ignorer","confidence":0.8,"justification":"raison precise en 1 phrase"}}""".strip()
 
 
 # ──────────────────────────────────────────────────────────────
@@ -225,21 +232,22 @@ def analyze_subscriber(row: dict, df: pd.DataFrame) -> dict:
     sub_id  = row.get("subscription_id", "?")
 
     try:
+        full_prompt = _SYSTEM_PROMPT + "\n\n" + _build_user_message(row, stats)
+
         response = requests.post(
             OLLAMA_URL,
             json={
-                "model": MODEL,
-                "messages": [
-                    {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user",   "content": _build_user_message(row, stats)},
-                ],
-                "stream": False,
+                "model":   MODEL,
+                "prompt":  full_prompt,
+                "stream":  False,
+                "format":  "json",          # force JSON valide — élimine les erreurs de parse
+                "options": {"num_predict": 350},  # limite les tokens pour éviter les coupures
             },
             timeout=TIMEOUT_SEC,
         )
         response.raise_for_status()
 
-        content = response.json()["message"]["content"]
+        content = response.json()["response"]
         result  = _parse_response(content)
 
     except requests.exceptions.ConnectionError:

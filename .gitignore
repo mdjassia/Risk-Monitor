@@ -14,10 +14,17 @@ venv/
 .env.*
 
 #  Data files (IMPORTANT)
-data/
+#  ignorer seulement les outputs
+output/
+output/*.csv
+
+#  ignorer DB
 *.sqlite
 *.db
-*.csv
+
+#  autoriser les CSV dans data/
+!data/
+!data/*.csv
 
 #  Jupyter
 .ipynb_checkpoints/

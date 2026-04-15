@@ -86,15 +86,29 @@ Voir : [prompts/](prompts/) — prompts versionnés avec explication des choix
 
 ---
 
-## Choix techniques
+## Stack technique
+
+| Outil | Rôle | Justification |
+|-------|------|---------------|
+| **Python** | Langage principal | Écosystème data mature (pandas, numpy), standard dans les projets d'analyse |
+| **Pandas** | Manipulation des données | Lecture SQLite, nettoyage, feature engineering, export CSV |
+| **Jupyter Notebook** | Exploration interactive | Permet de documenter la démarche de nettoyage pas à pas — exigé par l'énoncé |
+| **Streamlit** | Interface web | Framework Python natif, pas de front séparé à maintenir, déploiement simple |
+| **Plotly** | Visualisations | Graphiques interactifs (histogramme, camembert) sans JavaScript |
+| **Ollama** | Serveur LLM local | Fait tourner des LLMs en local sans API key ni coût — privacy des données |
+| **llama3.2:3b** | Modèle IA | Modèle léger (2 GB), rapide sur CPU, suffisant pour l'analyse structurée en JSON |
+| **Docker + docker-compose** | Déploiement | Environnement reproductible en une commande, Ollama inclus automatiquement |
+| **SQLite** | Base de données source | Format fourni dans l'énoncé — lecture directe avec pandas |
+| **CSV** | Persistance des outputs | Simple, lisible, pas de dépendance base de données pour ce volume de données |
+
+## Choix d'architecture
 
 | Choix | Justification |
 |-------|---------------|
 | **Scoring par membership** | Un même user peut être risqué dans un abonnement et normal dans un autre — le contexte owner change tout |
 | **Score additif (pas de règles critiques)** | Évite les faux positifs sur un signal isolé — un subscriber frauduleux cumule plusieurs signaux |
 | **Segmentation NOUVEAU / ACTIF / ANCIEN** | Un membre de 10 jours ne peut pas être jugé comme un membre de 2 ans — ajustements différenciés |
-| **Ollama local** | Gratuit, privacy, pas de dépendance cloud |
-| **Fallback rule-based** | L'interface reste utilisable même si le modèle IA est indisponible |
+| **Fallback rule-based** | L'interface reste utilisable même si Ollama est indisponible — même structure de réponse |
 | **Persistance CSV** | Simple, lisible, pas de dépendance base de données pour ce volume |
 
 ---
@@ -135,21 +149,36 @@ Risk-Monitor/
 
 ## Lancer le projet
 
+### Option A — Docker (recommandé)
+
+Aucune installation requise hormis Docker. Ollama et le modèle IA sont téléchargés automatiquement.
+
+```bash
+docker-compose up --build
+```
+
+L'app est accessible sur **http://localhost:8501**
+
+---
+
+### Option B — En local
+
 ```bash
 # 1. Installer les dépendances
 pip install -r requirements.txt
 
-# 2. Générer les scores (après avoir exécuté le notebook de nettoyage)
-python src/scoring.py
+# 2. Exécuter le notebook de nettoyage
+# Ouvrir et exécuter : notebooks/exploration&clean_data.ipynb
 
-# 3. (Optionnel) Télécharger le modèle IA local
-ollama pull llama3.2:3b
+# 3. Générer les scores de risque
+python src/scoring.py
 
 # 4. Lancer l'interface
 streamlit run app/app.py
 ```
 
-> Le notebook de nettoyage doit être exécuté en premier pour générer les CSV dans `data/`.
+> L'app est accessible sur **http://localhost:8501**  
+> Pour activer l'agent IA en local, installer [Ollama](https://ollama.com) puis : `ollama pull llama3.2:3b`
 
 ---
 
@@ -185,4 +214,4 @@ Aucun dictionnaire de données n'était fourni. Les hypothèses suivantes ont é
 - **Détection de patterns collectifs** : identifier des groupes de subscribers qui rejoignent le même owner à quelques minutes d'intervalle
 - **Horodatage des actions** : logger chaque décision opérateur avec timestamp
 - **Mise à jour incrémentale** : recalculer uniquement les memberships modifiés
-- **Déploiement** : containeriser avec Docker, déployer sur Render ou Railway
+- **Déploiement** : containeriser avec Docker
