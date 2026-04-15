@@ -487,21 +487,21 @@ def save_output(df):
     os.makedirs(OUTPUT_FOLDER, exist_ok=True)
     
     cols_to_keep = [
-        'user_id', 'subscription_id', 'owner_id',
+        'user_id', 'subscriber_email', 'subscription_id', 'brand', 'owner_id', 'owner_email',
         'segment', 'risk_score', 'risk_level',
-        'membership_days', 'is_active',
+        'membership_days',
         'payment_count', 'payment_failure_rate',
         'has_stripe_fraud_code', 'dispute_count',
         'complaints_received', 'complaints_filed',
         'sub_payment_failure_rate', 'owner_payment_failure_rate',
         'owner_has_fraud_code', 'owner_complaints_received'
     ]
-    
+
     existing_cols = [c for c in cols_to_keep if c in df.columns]
     final_df = df[existing_cols].copy()
-    
+
     # Conversions de types
-    for col in ['user_id', 'subscription_id', 'owner_id', 'membership_days', 'is_active',
+    for col in ['user_id', 'subscription_id', 'owner_id', 'membership_days',
                 'payment_count', 'dispute_count', 'complaints_received', 'complaints_filed',
                 'owner_dispute_count', 'owner_complaints_received']:
         if col in final_df.columns:
@@ -511,14 +511,7 @@ def save_output(df):
     final_df.to_csv(output_path, index=False)
     
     print(f"\n✓ Scoring terminé")
-    print(f"  Fichier: {output_path}")
-    print(f"  Memberships scorés: {len(final_df)}")
-    print(f"\n📊 Distribution des scores:")
-    print(final_df['risk_score'].describe())
-    print(f"\n📈 Par niveau:")
-    print(final_df['risk_level'].value_counts().sort_index())
-    print(f"\n🎯 Par segment:")
-    print(final_df['segment'].value_counts())
+
 
 
 # ============================================================
@@ -526,15 +519,13 @@ def save_output(df):
 # ============================================================
 
 def run_pipeline():
-    print("\n" + "=" * 60)
-    print("SCORING PIPELINE V2 - ROBUSTE ET CALIBRÉ")
-    print("=" * 60 + "\n")
+
     
     # Load
     users, payments, memberships, complaints, subscriptions = load_data()
     
     # Prepare
-    print("📋 Préparation des données...")
+
     users = prepare_users(users)
     
     # Features
@@ -551,24 +542,35 @@ def run_pipeline():
                             sub_feat, owner_feat)
     
     # Clean
-    print("🧹 Nettoyage...")
+
     df = clean_data(df)
     
     # Segment
-    print("📌 Segmentation...")
+  
     df['segment'] = df.apply(classify_segment, axis=1)
     
     # Score
-    print("⚖️  Scoring...")
+
     df = apply_scoring(df)
-    
+
+    # Enrichissement : email subscriber, brand, email owner
+ 
+    users_raw  = pd.read_csv(os.path.join(DATA_FOLDER, "users_clean.csv"))[['id', 'email']]
+    subs_raw   = pd.read_csv(os.path.join(DATA_FOLDER, "subscriptions_clean.csv"))[['id', 'brand']]
+
+    subscriber_map = users_raw.rename(columns={'id': 'user_id',  'email': 'subscriber_email'})
+    owner_map      = users_raw.rename(columns={'id': 'owner_id', 'email': 'owner_email'})
+    brand_map      = subs_raw.rename(columns={'id': 'subscription_id'})
+
+    df = df.merge(subscriber_map, on='user_id',       how='left')
+    df = df.merge(brand_map,      on='subscription_id', how='left')
+    df = df.merge(owner_map,      on='owner_id',       how='left')
+
     # Save
-    print("💾 Sauvegarde...")
+   
     save_output(df)
     
-    print("\n" + "=" * 60)
-    print("✓ Pipeline terminé avec succès !")
-    print("=" * 60 + "\n")
+
 
 
 if __name__ == "__main__":

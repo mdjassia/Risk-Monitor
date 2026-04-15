@@ -46,24 +46,18 @@ VALID_ACTIONS = {"surveiller", "avertir", "bloquer", "ignorer"}
 # SYSTEM PROMPT
 # ──────────────────────────────────────────────────────────────
 
-_SYSTEM_PROMPT = """Tu es un expert en detection de fraude. Analyse les donnees et reponds en JSON.
+_SYSTEM_PROMPT = """Tu es un expert en detection de fraude. Reponds en JSON avec exactement ces 6 cles :
 
-SIGNAUX (seulement si vrais) :
-- Si echec_paiement > 40% : "Taux echec paiement a X%"
-- Si Fraude_Stripe=OUI : "Code fraude Stripe detecte"
-- Si Litiges > 0 : "X litige(s) enregistre(s)"
-- Si Plaintes_recues > 1 : "X plaintes recues"
-- Si Sub_echec > 40% : "Abonnement risque, echec X%"
-- Si Owner_fraude=OUI : "Owner avec historique fraude"
+summary   : 1 phrase avec les chiffres reels (paiements, taux echec, score)
+signals   : liste des alertes vraies parmi : "Taux echec paiement a N%", "Code fraude Stripe detecte", "N litige(s)", "N plaintes recues", "Abonnement risque echec N%", "Owner historique fraude". Liste vide [] si aucune.
+vs_pop    : "echec N% vs moyenne M%, score S vs moyenne W" avec les chiffres reels des donnees
+action    : exactement un de : ignorer / surveiller / avertir / bloquer
+confidence: nombre entre 0.0 et 1.0
+reason    : 1 phrase justifiant l action
 
-DECISION :
-- ignorer : score < 40 et 0 signal
-- surveiller : score 40-60 ou 1 signal faible
-- avertir : score 60-80 ou 2+ signaux
-- bloquer : Fraude_Stripe=OUI ou score > 80
+Regles action : ignorer si score<40 sans signal ; surveiller si score 40-60 ou 1 signal ; avertir si score 60-80 ou 2+ signaux ; bloquer si fraude Stripe ou score>80
 
-FORMAT JSON :
-{"analyste":{"behavior_summary":"1 phrase avec chiffres concrets","alert_signals":["signal avec chiffre"],"vs_population":"echec X% vs moyenne Y%, score Z vs moyenne W"},"decideur":{"action":"ignorer","confidence":0.8,"justification":"raison precise en 1 phrase"}}""".strip()
+Exemple (chiffres fictifs) : {"summary":"3 paiements, 67% echec, score 45/100 MODERE","signals":["Taux echec paiement a 67%","Abonnement risque echec 52%"],"vs_pop":"echec 67% vs moyenne 18%, score 45 vs moyenne 31","action":"surveiller","confidence":0.75,"reason":"Taux echec 3x superieur a la moyenne, pas de fraude confirmee"}""".strip()
 
 
 # ──────────────────────────────────────────────────────────────
@@ -94,12 +88,12 @@ def _build_user_message(row: dict, stats: dict) -> str:
     owner_pf = row.get("owner_payment_failure_rate", 0) or 0
 
     return (
-        f"Données subscriber:\n"
+        f"Donnees subscriber:\n"
         f"- Segment: {row.get('segment')} | Score risque: {row.get('risk_score')}/100 | Niveau: {row.get('risk_level')}\n"
-        f"- Paiements: {int(row.get('payment_count',0))} tentatives, {pf:.0%} d'échec | Fraude Stripe: {'OUI' if row.get('has_stripe_fraud_code') else 'non'} | Litiges: {int(row.get('dispute_count',0))}\n"
-        f"- Plaintes reçues: {int(row.get('complaints_received',0))} | Plaintes déposées: {int(row.get('complaints_filed',0))}\n"
-        f"- Taux échec abonnement: {sub_pf:.0%} | Owner échec: {owner_pf:.0%} | Owner fraude: {'OUI' if row.get('owner_has_fraud_code') else 'non'}\n"
-        f"Moyennes base ({stats.get('total',0)} membres): score moyen={stats.get('avg_score',0):.0f}/100, échec moyen={stats.get('avg_failure_rate',0):.0%}"
+        f"- Paiements: {int(row.get('payment_count',0))} tentatives, taux echec={pf*100:.0f}% | Fraude Stripe: {'OUI' if row.get('has_stripe_fraud_code') else 'non'} | Litiges: {int(row.get('dispute_count',0))}\n"
+        f"- Plaintes recues: {int(row.get('complaints_received',0))} | Plaintes deposees: {int(row.get('complaints_filed',0))}\n"
+        f"- Taux echec abonnement: {sub_pf*100:.0f}% | Taux echec owner: {owner_pf*100:.0f}% | Owner fraude: {'OUI' if row.get('owner_has_fraud_code') else 'non'}\n"
+        f"Moyennes base ({stats.get('total',0)} membres): score moyen={stats.get('avg_score',0):.0f}/100, taux echec moyen={stats.get('avg_failure_rate',0)*100:.0f}%"
     )
 
 
@@ -120,7 +114,20 @@ def _parse_response(text: str) -> dict:
             raise ValueError("Aucun JSON trouvé dans la réponse")
         data = json.loads(match.group())
 
-    # Validation
+    # Normalisation des clés — le modèle peut utiliser des variantes en anglais/français
+    _ANALYSTE_ALIASES = ["analyste", "analyst", "analysis", "analyse"]
+    _DECIDEUR_ALIASES = ["decideur", "decision", "decider", "recommandation", "recommendation"]
+
+    for alias in _ANALYSTE_ALIASES:
+        if alias in data and alias != "analyste":
+            data["analyste"] = data.pop(alias)
+            break
+
+    for alias in _DECIDEUR_ALIASES:
+        if alias in data and alias != "decideur":
+            data["decideur"] = data.pop(alias)
+            break
+
     if "analyste" not in data or "decideur" not in data:
         raise ValueError(f"Clés manquantes dans la réponse: {list(data.keys())}")
 
@@ -241,7 +248,7 @@ def analyze_subscriber(row: dict, df: pd.DataFrame) -> dict:
                 "prompt":  full_prompt,
                 "stream":  False,
                 "format":  "json",          # force JSON valide — élimine les erreurs de parse
-                "options": {"num_predict": 350},  # limite les tokens pour éviter les coupures
+                "options": {"num_predict": 450},  # assez pour le JSON complet
             },
             timeout=TIMEOUT_SEC,
         )

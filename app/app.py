@@ -162,22 +162,30 @@ if st.session_state.page == "Accueil":
         lambda r: actions_dict.get(f"{r['user_id']}_{r['subscription_id']}", "—"),
         axis=1,
     )
-    st.dataframe(df_display, use_container_width=True)
+    # Mettre les colonnes lisibles en premier
+    priority_cols = ["subscriber_email", "brand", "owner_email", "segment",
+                     "risk_score", "risk_level", "action"]
+    other_cols    = [c for c in df_display.columns if c not in priority_cols]
+    ordered_cols  = [c for c in priority_cols if c in df_display.columns] + other_cols
+    st.dataframe(df_display[ordered_cols], use_container_width=True)
 
     st.markdown("---")
     st.subheader("👤 Détails subscriber")
 
-    if "user_id" in df.columns:
-        user_id = st.selectbox("Choisir user_id", sorted(df["user_id"].unique()))
-        user_data = df[df["user_id"] == user_id]
+    email_col = "subscriber_email" if "subscriber_email" in df.columns else "user_id"
+    if email_col in df.columns:
+        selected_email = st.selectbox("Choisir un subscriber", sorted(df[email_col].dropna().unique()))
+        user_data = df[df[email_col] == selected_email]
 
         for _, row in user_data.iterrows():
+            user_id        = row["user_id"]
             sub_id         = row["subscription_id"]
+            brand          = row.get("brand", sub_id)
             current_action = get_action(user_id, sub_id)
             ai_key         = f"ai_result_{user_id}_{sub_id}"
 
             with st.expander(
-                f"Membership — Subscription {sub_id} | "
+                f"Membership — {brand} | "
                 f"Score: {row['risk_score']} | {row['risk_level']}"
             ):
                 # ── Données brutes ──
